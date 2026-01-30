@@ -11,7 +11,7 @@
 <div class="container">
     
     <div class="header-top">
-        <h1>AI Quiz Master</h1>
+        <h1>AI Quiz Master <span id="quiz-range-label">(Caricamento...)</span></h1>
         <button class="theme-toggle" onclick="window.toggleTheme()" title="Cambia Tema (AMOLED)">
             <span id="theme-icon">☀️</span>
         </button>
@@ -49,17 +49,9 @@
     </div>
 
     <div class="control-group">
-        <span class="group-label">Blocchi Domande</span>
-        <div class="btn-row">
-            <button class="btn-block active" onclick="window.toggleBlock(1)" data-block="1">1-20</button>
-            <button class="btn-block" onclick="window.toggleBlock(2)" data-block="2">21-40</button>
-            <button class="btn-block" onclick="window.toggleBlock(3)" data-block="3">41-60</button>
-            <button class="btn-block" onclick="window.toggleBlock(4)" data-block="4">61-80</button>
-            <button class="btn-block" onclick="window.toggleBlock(5)" data-block="5">81-100</button>
-            <button class="btn-block" onclick="window.toggleBlock(6)" data-block="6">101-120</button>
-            <button class="btn-block" onclick="window.toggleBlock(7)" data-block="7">121-138</button>
-            <button class="btn-block" onclick="window.selectAllBlocks()" style="border: 2px solid var(--text-main); font-weight: 700;">Tutte</button>
-        </div>
+        <span class="group-label">Blocchi Domande (50 per blocco)</span>
+        <div id="filter-buttons-container" class="btn-row">
+            </div>
         
         <div class="custom-range-wrapper" style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px;">
             <span class="group-label">Range / ID Specifici</span>
@@ -105,7 +97,7 @@
     </div>
 
     <div id="quiz-container" style="margin-top: 30px;">
-        <p style="text-align: center; color: var(--text-secondary); padding: 40px;">Caricamento...</p>
+        <p style="text-align: center; color: var(--text-secondary); padding: 40px;">In attesa del database...</p>
     </div>
 </div>
 
@@ -135,6 +127,8 @@
     // --- VARIABILI GLOBALI ---
     let fullDb = [];
     let activeBlocks = [1];
+    const BLOCK_SIZE = 50; // DEFINISCE LA GRANDEZZA DEI BLOCCHI (es. 1-50, 51-100)
+    
     let score = 0;
     let errors = 0; 
     let attempted = new Set();
@@ -149,7 +143,7 @@
     let modeA = 'ordered'; 
     let currentQuizSet = [];
     let useCustomRange = false;
-    let customStart = 1, customEnd = 138;
+    let customStart = 1, customEnd = 350; // Placeholder, verrà aggiornato
     let useSpecificSelection = false;
     let specificIds = [];
 
@@ -277,20 +271,14 @@
         updateCloudButtonUI();
         
         // Aggiorna UI se la domanda è visibile
-        // NOTA: Con la nuova logica spoiler, l'aggiornamento dinamico è gestito 
-        // rigenerando il contenuto o aggiornando il div nascosto.
         const header = document.querySelector(`#q-${qId} .question-header`);
         if(header) {
-            // Cerchiamo il container delle info nascoste
             let infoContainer = header.querySelector('.post-answer-reveal');
             if(!infoContainer) {
-                // Se non esiste ancora (primo errore), creiamolo
                 infoContainer = document.createElement('div');
                 infoContainer.className = 'post-answer-reveal';
                 header.appendChild(infoContainer);
             }
-
-            // Aggiorna contenuto: badge + pulsante
             infoContainer.innerHTML = `
                 <span class="count-badge">❌ ${currentCount}</span>
                 <button class="btn-remove-cloud" onclick="window.manualRemove(${qId})">✅ Rimuovi</button>
@@ -368,17 +356,18 @@
         regenerateQuiz();
     };
 
-    window.toggleBlock = function(b) {
+    window.toggleBlock = function(blockIndex) {
         useCustomRange = false; isCloudMode = false; useSpecificSelection = false;
-        const btn = document.querySelector(`button[data-block="${b}"]`);
-        if(activeBlocks.includes(b)) {
+        const btn = document.querySelector(`button[data-block="${blockIndex}"]`);
+        
+        if(activeBlocks.includes(blockIndex)) {
             if(activeBlocks.length > 1) {
-                activeBlocks = activeBlocks.filter(x => x !== b);
-                btn.classList.remove('active');
+                activeBlocks = activeBlocks.filter(x => x !== blockIndex);
+                if(btn) btn.classList.remove('active');
             }
         } else {
-            activeBlocks.push(b);
-            btn.classList.add('active');
+            activeBlocks.push(blockIndex);
+            if(btn) btn.classList.add('active');
         }
         btnCloud.classList.remove('active');
         regenerateQuiz();
@@ -386,7 +375,11 @@
 
     window.selectAllBlocks = function() {
         useCustomRange = false; isCloudMode = false; useSpecificSelection = false;
-        activeBlocks = [1,2,3,4,5,6,7];
+        // Calcola tutti i blocchi disponibili
+        const totalBlocks = Math.ceil(fullDb.length / BLOCK_SIZE);
+        activeBlocks = [];
+        for(let i=1; i<=totalBlocks; i++) activeBlocks.push(i);
+        
         resetFiltersUI();
         document.querySelectorAll('.btn-block[data-block]').forEach(b => b.classList.add('active'));
         regenerateQuiz();
@@ -434,61 +427,80 @@
         p.style.display = p.style.display === 'none' ? 'block' : 'none';
     };
 
-    // --- CORE QUIZ ---
-// --- CORE QUIZ: Funzione di Caricamento Adattiva ---
+    // --- CORE QUIZ: CARICAMENTO ADATTIVO e GENERAZIONE FILTRI ---
     async function loadQuestions() {
         try {
             const res = await fetch('questions.json');
-            if(!res.ok) throw new Error("File questions.json non trovato");
-            
-            // 1. Carica i dati grezzi (Formato Dizionario/Oggetto)
+            if(!res.ok) throw new Error("Err");
             const rawData = await res.json();
+            
             fullDb = [];
-
-            // 2. Converti nel formato Array compatibile con il vecchio codice
+            // Conversione dal formato Dizionario (nuovo) al formato Array (interno)
             for (const key in rawData) {
-                // Salta le chiavi di riepilogo (es. "totali", "fatte")
                 if (key === "totali" || key === "fatte") continue;
-
                 const item = rawData[key];
-                
-                // Se l'elemento non ha la struttura domanda/risposte, saltalo
                 if (!item.domanda || !item.risposte) continue;
 
-                // CONVERSIONE CRITICA: 
-                // Il vecchio JS vuole l'INDICE (numero) della risposta corretta.
-                // Il nuovo JSON ha la STRINGA della risposta corretta.
-                // Qui troviamo l'indice confrontando le stringhe.
+                // Trova indice risposta corretta confrontando le stringhe
                 let correctIndex = item.risposte.indexOf(item.giusta);
-
-                // Fallback di sicurezza: se non trova match esatto, prova rimuovendo spazi
                 if (correctIndex === -1 && item.giusta) {
                     correctIndex = item.risposte.findIndex(r => r.trim() === item.giusta.trim());
                 }
-                
-                // Se ancora non trova nulla (errore nei dati), mette 0 di default per non rompere il gioco
-                if (correctIndex === -1) correctIndex = 0;
+                if (correctIndex === -1) correctIndex = 0; // Fallback
 
-                // Aggiungi al database nel formato corretto
                 fullDb.push({
-                    id: parseInt(key), // Trasforma la chiave "1" nel numero 1
-                    q: item.domanda,   // Mappa "domanda" -> "q"
-                    options: item.risposte, // Mappa "risposte" -> "options"
-                    correct: correctIndex   // Mappa "giusta" -> indice numerico
+                    id: parseInt(key),
+                    q: item.domanda,
+                    options: item.risposte,
+                    correct: correctIndex
                 });
             }
 
-            // 3. Ordina per ID per sicurezza (caso mai le chiavi fossero disordinate)
+            // Ordina per ID
             fullDb.sort((a,b) => a.id - b.id);
+            
+            // Aggiorna titolo e setup pulsanti filtri
+            if(fullDb.length > 0) {
+                document.getElementById('quiz-range-label').innerText = `(1-${fullDb.length})`;
+                setupFilterButtons(fullDb.length);
+            }
 
-            // Avvia il quiz
             regenerateQuiz();
-
         } catch(e) {
             console.error(e);
-            document.getElementById('quiz-container').innerHTML = 
-                "<p style='text-align:center; color:var(--error-color)'>Errore caricamento o formato questions.json non valido.<br>Controlla la console per dettagli.</p>";
+            document.getElementById('quiz-container').innerHTML = "<p style='text-align:center; color:var(--error-color)'>File questions.json non trovato o non valido.</p>";
         }
+    }
+
+    // Genera pulsanti filtro in base al numero di domande
+    function setupFilterButtons(totalQuestions) {
+        const container = document.getElementById('filter-buttons-container');
+        container.innerHTML = '';
+        
+        const numBlocks = Math.ceil(totalQuestions / BLOCK_SIZE);
+        
+        for (let i = 1; i <= numBlocks; i++) {
+            const start = (i - 1) * BLOCK_SIZE + 1;
+            const end = Math.min(i * BLOCK_SIZE, totalQuestions);
+            
+            const btn = document.createElement('button');
+            btn.className = 'btn-block';
+            btn.innerText = `${start}-${end}`;
+            btn.dataset.block = i;
+            if(activeBlocks.includes(i)) btn.classList.add('active');
+            
+            btn.onclick = () => window.toggleBlock(i);
+            container.appendChild(btn);
+        }
+
+        // Bottone "Tutte"
+        const allBtn = document.createElement('button');
+        allBtn.className = 'btn-block';
+        allBtn.innerText = 'Tutte';
+        allBtn.style.border = "2px solid var(--text-main)";
+        allBtn.style.fontWeight = "700";
+        allBtn.onclick = () => window.selectAllBlocks();
+        container.appendChild(allBtn);
     }
 
     function regenerateQuiz() {
@@ -502,13 +514,13 @@
         } else if (useCustomRange) {
             raw = fullDb.filter(q => q.id >= customStart && q.id <= customEnd);
         } else {
-            if(activeBlocks.includes(1)) raw = raw.concat(fullDb.slice(0, 20));
-            if(activeBlocks.includes(2)) raw = raw.concat(fullDb.slice(20, 40));
-            if(activeBlocks.includes(3)) raw = raw.concat(fullDb.slice(40, 60));
-            if(activeBlocks.includes(4)) raw = raw.concat(fullDb.slice(60, 80));
-            if(activeBlocks.includes(5)) raw = raw.concat(fullDb.slice(80, 100));
-            if(activeBlocks.includes(6)) raw = raw.concat(fullDb.slice(100, 120));
-            if(activeBlocks.includes(7)) raw = raw.concat(fullDb.slice(120, 138));
+            // Logica a Blocchi Dinamici
+            activeBlocks.forEach(blockIndex => {
+                const startIdx = (blockIndex - 1) * BLOCK_SIZE; // es. block 1 -> 0
+                const endIdx = blockIndex * BLOCK_SIZE;         // es. block 1 -> 50
+                // Slice è sicuro anche se endIdx supera la lunghezza array
+                raw = raw.concat(fullDb.slice(startIdx, endIdx));
+            });
         }
 
         currentQuizSet = JSON.parse(JSON.stringify(raw));
@@ -559,7 +571,6 @@
                 }
                 const removeBtn = `<button class="btn-remove-cloud" onclick="window.manualRemove(${q.id})">✅ Rimuovi</button>`;
                 
-                // Raggruppiamo tutto nel div che verrà mostrato solo con .answered
                 cloudInfoHTML = `<div class="post-answer-reveal">${countBadgeHTML} ${removeBtn}</div>`;
             }
 
